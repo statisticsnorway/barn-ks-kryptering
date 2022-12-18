@@ -1,0 +1,83 @@
+name: $(Build.SourceBranch)-$(date:yyyyMMdd)$(rev:.r)
+
+# Pipeline triggers on any branch and tag
+trigger:
+  branches:
+    include:
+      - '*'
+  tags:
+    include:
+      - '*'
+
+# Pipeline will be run on this base image
+pool:
+  vmImage: ubuntu-latest
+
+# Variables global to this pipeline
+# https://docs.microsoft.com/en-us/azure/devops/pipelines/process/variables
+variables:
+  # Variables defined in Pipelines->Library->Variable Groups in your project in
+  # Azure Pipelines
+  - group: Hemmeligheter
+  # Variables defined here
+  - name: MAVEN_CACHE_FOLDER
+    value: $(Pipeline.Workspace)/.m2/repository
+  - name: ArtifactRevision
+    ${{ if startsWith(variables['Build.SourceBranch'], 'refs/tags/') }}:
+      value: "$(Build.SourceBranchName)"
+    ${{ else }}:
+      value: "$(Build.SourceBranchName)-SNAPSHOT"
+  - name: MAVEN_OPTS
+    value: '-Dmaven.repo.local=$(MAVEN_CACHE_FOLDER) -Drevision=$(ArtifactRevision)'
+
+resources:
+  repositories:
+    # See https://github.com/statisticsnorway/ssb-developer-guide/blob/master/docs/azure_pipeline_doc.md#templating
+    # for info on how to use the templates repo
+    - repository: templates
+      type: github
+      name: statisticsnorway/azure-pipelines-templates
+      # The version of the repo on GitHub. Change to needed version
+      ref: refs/tags/1.1.31
+      # Service connection in the barn project on Pipelines
+      # with access to the template repository.
+      endpoint: 'github-Barnevernsregisteret'
+
+# Job which runs mvn test and verify, Sonar Analysis, mvn deploy
+jobs:
+  - job: buildTestAndDeployArtifact
+    displayName: 'Test/build app and deploy artifact'
+
+    # Job condition: Run these jobs on any branch, also tags
+
+    # Steps in this Job
+    steps:
+      - script: 'echo "Artifact revision: $(ArtifactRevision)"'
+        displayName: 'Print ArtifactRevision'
+
+      - task: JavaToolInstaller@0
+        inputs:
+          versionSpec: '17'
+          jdkArchitectureOption: 'x64'
+          jdkSourceOption: 'PreInstalled'
+
+      # Maven caching to speed up pipeline build time
+      - template: maven/task-cache.yml@templates
+
+      # Authenticate to google artifact registry
+      # See https://github.com/statisticsnorway/azure-pipelines-templates/blob/master/maven/task-authenticate-gar.yml
+      - template: maven/task-authenticate-gar.yml@templates
+
+      - task: Maven@3
+        displayName: Maven verify
+        inputs:
+          goals: 'verify'
+          options: '-X --batch-mode $(MAVEN_OPTS)'
+          publishJUnitResults: false
+          mavenPomFile: 'pom.xml'
+          javaHomeOption: 'JDKVersion'
+          jdkArchitectureOption: 'x64'
+
+      # Deploy artifact
+      # See https://github.com/statisticsnorway/azure-pipelines-templates/blob/master/maven/task-install-and-deploy-to-gar.yml
+      - template: maven/task-install-and-deploy-to-gar.yml@templates
